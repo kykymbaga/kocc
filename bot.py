@@ -72,6 +72,13 @@ def api(method, payload=None, timeout=40):
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            error_body = json.loads(exc.read().decode("utf-8"))
+            detail = error_body.get("description", f"HTTP {exc.code}")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            detail = f"HTTP {exc.code}"
+        raise RuntimeError(f"Telegram {method} failed: {detail}") from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise RuntimeError(f"Telegram API request failed ({method})") from exc
     if not result.get("ok"):
@@ -324,10 +331,15 @@ def main():
             state["offset"] = update["update_id"] + 1
             message = update.get("message", {})
             chat = message.get("chat", {})
-            if str(chat.get("id")) != str(CHAT_ID) or message.get("from", {}).get("is_bot"):
+            if str(chat.get("id")) != str(CHAT_ID):
+                print("Ignoring update from a different chat.", flush=True)
+                save_state(state)
+                continue
+            if message.get("from", {}).get("is_bot"):
                 save_state(state)
                 continue
             mention_detected = is_mention(message)
+            print(f"Target-group message received; mention_detected={mention_detected}.", flush=True)
             if mention_detected:
                 print("Target-group mention detected; preparing a reply.", flush=True)
             sender = message.get("from", {})
