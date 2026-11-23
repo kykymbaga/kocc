@@ -1,0 +1,12 @@
+.telegram-token.dpapi
+.openai-key.dpapi
+.env
+.env.*
+!.env.example
+.bot.pid
+state.json
+state.tmp
+bot.stdout.log
+bot.stderr.log
+__pycache__/
+
