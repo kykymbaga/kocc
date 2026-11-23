@@ -21,7 +21,6 @@ jobs:
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_MODEL: gpt-4o-mini
-      BOT_STATE_FILE: ${{ runner.temp }}/kocc-state/state.json
       BOT_MAX_SECONDS: "210"
       MORNING_TIME: "09:00"
       POLL_TIME: "18:00"
@@ -46,13 +45,12 @@ jobs:
       - name: Prepare persisted bot state
         shell: bash
         run: |
-          mkdir -p "$(dirname "$BOT_STATE_FILE")"
-          printf '{"message_count":0,"last_morning_date":null,"last_poll_date":null,"last_quote_id":null,"offset":0,"recent_messages":[]}' > "$BOT_STATE_FILE"
+          printf '{"message_count":0,"last_morning_date":null,"last_poll_date":null,"last_quote_id":null,"offset":0,"recent_messages":[]}' > state.json
 
       - name: Restore bot state
         uses: actions/cache/restore@v4
         with:
-          path: ${{ runner.temp }}/kocc-state/state.json
+          path: state.json
           key: kocc-state-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: kocc-state-
 
@@ -63,6 +61,6 @@ jobs:
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: ${{ runner.temp }}/kocc-state/state.json
+          path: state.json
           key: kocc-state-${{ github.run_id }}-${{ github.run_attempt }}
 
