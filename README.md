@@ -1,6 +1,6 @@
 # Kocc Barma proverb database and Telegram bot
 
-This folder contains a source-oriented database of the **57 numbered sayings** in the historical collection *La sagesse de Ncothie Barma*, plus a small Telegram bot that posts a Belarusian rendering each morning and replies to each 40th new group message.
+This folder contains a source-oriented database of the **57 numbered sayings** in the historical collection *La sagesse de Ncothie Barma*, plus a Telegram bot with Belarusian quotes and occasional discussion replies.
 
 ## What the corpus is (and is not)
 
@@ -34,7 +34,7 @@ $env:MORNING_TIME = "09:00"
 python .\bot.py
 ```
 
-The morning post is sent once per day at 09:00 Europe/Minsk. A native opinion poll is posted Sundays at 18:00. The counter persists in `state.json` and counts new non-bot messages in the configured group; every 40th message gets a short, radical question directly addressing `@StAnastasiaSt`. On `@koccbarmafallbot` mention, the bot uses the last five messages as context and responds in Belarusian in a Kocc-inspired voice, without claiming to be him or inventing historical quotations. OpenAI API use requires a separate API key and may incur charges; without a key, a local keyword-based fallback is used. When the key is configured, only the last five message texts/captions (up to 500 characters each) are sent to OpenAI. `DISCARD_BACKLOG=true` skips queued messages from before startup. One in five generated quote messages omits the in-message attribution; Telegram still shows the bot account as sender.
+The morning post is sent once per day at 09:00 Europe/Minsk as a short original fable paired with a historical proverb. A native opinion poll is posted Sundays at 18:00. `conversation-bank.json` stores contemporary, original Belarusian aphorisms, discussion prompts, and fables separately from the historical corpus; they are not presented as authentic Kocc Barma quotations. On relevant messages, the bot may add a local-bank reply, capped at four a day with at least 30 minutes between them; these do not use the OpenAI API. Every 40th new human message can prompt a general question or invite a recently active member who has not been mentioned that day. The bot does not single out a fixed member or mute people for disagreement. On `@koccbarmafallbot` mention, it uses the last five messages as context and can respond in Belarusian; only this contextual reply uses OpenAI, when `OPENAI_API_KEY` is set. The bot posts under its visible Telegram account. `DISCARD_BACKLOG=true` skips queued messages from before startup. One in five historical-quote posts omits the in-message attribution; Telegram still shows the bot account as sender.
 
 ## GitHub Actions hosting
 
