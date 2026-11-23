@@ -26,6 +26,9 @@ jobs:
       POLL_TIME: "18:00"
       REPLY_EVERY: "40"
       DISCARD_BACKLOG: "false"
+      AUTO_REPLY_CHANCE: "0.22"
+      AUTO_REPLY_COOLDOWN_SECONDS: "1800"
+      AUTO_REPLY_DAILY_MAX: "4"
 
     steps:
       - name: Check required secrets
