@@ -1,4 +1,4 @@
-"""Small-group Kocc Barma quote bot. Python 3.10+, standard library only."""
+"""Small-group Kocc Barma-inspired discussion bot; Python 3.10+, stdlib only."""
 import json
 import os
 import random
@@ -11,18 +11,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 CORPUS = json.loads((ROOT / "corpus.json").read_text(encoding="utf-8"))
+CONVERSATION_BANK = json.loads((ROOT / "conversation-bank.json").read_text(encoding="utf-8"))
 STATE_PATH = Path(os.getenv("BOT_STATE_FILE", str(ROOT / "state.json")))
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 BOT_USERNAME = "@koccbarmafallbot"
-TARGET_USERNAME = "@StAnastasiaSt"
 # Minsk uses UTC+03:00 year-round; this avoids a separate Windows tzdata dependency.
 TZ = timezone(timedelta(hours=3), "Europe/Minsk")
 SEND_AT = os.getenv("MORNING_TIME", "09:00")
 POLL_AT = os.getenv("POLL_TIME", "18:00")
 THRESHOLD = int(os.getenv("REPLY_EVERY", "40"))
+AUTO_REPLY_CHANCE = float(os.getenv("AUTO_REPLY_CHANCE", "0.22"))
+AUTO_REPLY_COOLDOWN_SECONDS = int(os.getenv("AUTO_REPLY_COOLDOWN_SECONDS", "1800"))
+AUTO_REPLY_DAILY_MAX = int(os.getenv("AUTO_REPLY_DAILY_MAX", "4"))
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}/"
 
 # Only translations with an editorial gloss are eligible. The small keyword
@@ -91,10 +94,16 @@ def api(method, payload=None, timeout=40):
 def load_state():
     try:
         state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-        state.setdefault("recent_messages", [])
-        return state
     except FileNotFoundError:
-        return {"message_count": 0, "last_morning_date": None, "last_quote_id": None, "offset": 0, "recent_messages": []}
+        state = {"message_count": 0, "last_morning_date": None, "last_poll_date": None,
+                 "last_quote_id": None, "offset": 0, "recent_messages": []}
+    state.setdefault("recent_messages", [])
+    state.setdefault("auto_reply_count", 0)
+    state.setdefault("auto_reply_date", None)
+    state.setdefault("last_auto_reply_at", 0)
+    state.setdefault("mentioned_usernames", [])
+    state.setdefault("mentioned_usernames_date", None)
+    return state
 
 
 def save_state(state):
@@ -146,44 +155,80 @@ def message_topic(text):
     return "default"
 
 
-def radical_question(recent):
-    context = "\n".join(f"{x.get('sender','Удзельнік')}: {x.get('text','')[:400]}" for x in recent[-5:])
-    question = None
-    if OPENAI_API_KEY:
-        payload = {
-            "model": OPENAI_MODEL,
-            "messages": [
-                {"role": "system", "content": (
-                    "Write one concise question in Belarusian, directly addressing @StAnastasiaSt. "
-                    "Use the last five group messages as context. Make the question intellectually "
-                    "radical and unsettling in a Kocc Barma-inspired public-wisdom style: expose an "
-                    "assumption, power relation, or accepted rule that deserves scrutiny. Be respectful; "
-                    "no personal insult, threat, or call for violence. Do not invent or quote Kocc Barma. "
-                    "Return only the question, no preamble."
-                )},
-                {"role": "user", "content": "Апошнія паведамленні:\n" + context},
-            ],
-            "max_tokens": 100,
-            "temperature": 0.9,
-        }
-        request = urllib.request.Request(
-            "https://api.openai.com/v1/chat/completions",
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=45) as response:
-                answer = json.loads(response.read().decode("utf-8"))
-            question = answer["choices"][0]["message"]["content"].strip()
-        except (urllib.error.URLError, TimeoutError, KeyError, IndexError, json.JSONDecodeError):
-            print("OpenAI question generation failed; using local fallback.", flush=True)
-            question = None
-    if not question:
-        question = FALLBACK_QUESTIONS[message_topic(context)]
-    # Ensure the named questioner is directly addressed without depending on
-    # the model to preserve the exact Telegram username.
-    question = question.replace(TARGET_USERNAME, "").strip(" \n—,:;")
-    return maybe_kocc_signature(f"{TARGET_USERNAME}, {question}")
+def choose_local_text(group, topic):
+    entries = CONVERSATION_BANK[group]
+    return random.choice(entries.get(topic, entries.get("default", [])))
+
+
+def choose_member_to_invite(state, current_username=None):
+    today = datetime.now(TZ).date().isoformat()
+    if state.get("mentioned_usernames_date") != today:
+        state["mentioned_usernames_date"] = today
+        state["mentioned_usernames"] = []
+    already_asked = {name.casefold() for name in state.get("mentioned_usernames", [])}
+    current_username = (current_username or "").casefold()
+    candidates = []
+    for item in reversed(state.get("recent_messages", [])[-10:]):
+        username = (item.get("username") or "").strip().lstrip("@").casefold()
+        if username and username != current_username and username not in already_asked:
+            candidates.append(username)
+    if not candidates:
+        return None
+    chosen = random.choice(list(dict.fromkeys(candidates)))
+    state.setdefault("mentioned_usernames", []).append(chosen)
+    return "@" + chosen
+
+
+def radical_question(recent, state, current_username=None):
+    context = "\n".join(x.get("text", "") for x in recent[-5:])
+    question = choose_local_text("questions", message_topic(context))
+    member = choose_member_to_invite(state, current_username)
+    if member:
+        return f"{member}, калі зручна, як ты гэта бачыш?\n{question}"
+    return question
+
+
+def maybe_auto_reply(message, state):
+    text = (message.get("text") or message.get("caption") or "").strip()
+    if len(text) < 28 or text.startswith("/") or is_mention(message):
+        return False
+    today = datetime.now(TZ).date().isoformat()
+    if state.get("auto_reply_date") != today:
+        state["auto_reply_date"] = today
+        state["auto_reply_count"] = 0
+    if state.get("auto_reply_count", 0) >= AUTO_REPLY_DAILY_MAX:
+        return False
+    now = time.time()
+    if now - state.get("last_auto_reply_at", 0) < AUTO_REPLY_COOLDOWN_SECONDS:
+        return False
+    topic = message_topic(text)
+    question_like = "?" in text or any(word in text.casefold() for word in ("думаю", "лічу", "чаму", "як вы", "што калі"))
+    if topic == "default" and not question_like:
+        return False
+    chance = min(0.45, AUTO_REPLY_CHANCE + (0.12 if question_like else 0))
+    if random.random() > chance:
+        return False
+    response = choose_local_text("responses", topic)
+    sender_username = message.get("from", {}).get("username")
+    if random.random() < 0.30:
+        member = choose_member_to_invite(state, sender_username)
+        if member:
+            response = f"{member}, калі зручна, што ты думаеш?\n{response}"
+    try:
+        api("sendMessage", {
+            "chat_id": CHAT_ID,
+            "text": response,
+            "reply_to_message_id": message["message_id"],
+            "allow_sending_without_reply": True,
+        })
+    except RuntimeError as exc:
+        print(f"Could not send local discussion reply: {exc}", flush=True)
+        return False
+    state["auto_reply_count"] = state.get("auto_reply_count", 0) + 1
+    state["last_auto_reply_at"] = now
+    save_state(state)
+    print("Sent an occasional local discussion reply.", flush=True)
+    return True
 
 
 def send_opinion_poll(state):
@@ -205,7 +250,7 @@ def send_quick_command(message, state):
         q = choose_quote()
         body = quote_text(q)
     elif text.startswith("/question") or text.startswith("/counter"):
-        body = radical_question(state.get("recent_messages", []))
+        body = radical_question(state.get("recent_messages", []), state, message.get("from", {}).get("username"))
     elif text.startswith("/poll"):
         send_opinion_poll(state)
         return True
@@ -278,7 +323,9 @@ def due_poll_time(now):
 
 def send_morning(state):
     quote = choose_quote()
-    api("sendMessage", {"chat_id": CHAT_ID, "text": quote_text(quote)})
+    story = random.choice(CONVERSATION_BANK["stories"])
+    body = f"Кароткая байка:\n{story}\n\nСённяшняя прымаўка:\n{quote_text(quote)}"
+    api("sendMessage", {"chat_id": CHAT_ID, "text": body})
     state["last_morning_date"] = datetime.now(TZ).date().isoformat()
     save_state(state)
 
@@ -345,8 +392,12 @@ def main():
             sender = message.get("from", {})
             sender_name = " ".join(filter(None, [sender.get("first_name"), sender.get("last_name")])) or "Удзельнік"
             message_text = message.get("text") or message.get("caption") or "[медыя або паведамленне без тэксту]"
-            state.setdefault("recent_messages", []).append({"sender": sender_name, "text": message_text[:500]})
-            state["recent_messages"] = state["recent_messages"][-5:]
+            state.setdefault("recent_messages", []).append({
+                "sender": sender_name,
+                "username": sender.get("username"),
+                "text": message_text[:500],
+            })
+            state["recent_messages"] = state["recent_messages"][-10:]
             if (message.get("text") or "").startswith("/") and send_quick_command(message, state):
                 state["message_count"] = state.get("message_count", 0) + 1
                 save_state(state)
@@ -363,11 +414,12 @@ def main():
                     print("Mention reply sent.", flush=True)
                 except RuntimeError as exc:
                     print(f"Could not send mention reply: {exc}", flush=True)
+            auto_replied = False if mention_detected else maybe_auto_reply(message, state)
             state["message_count"] = state.get("message_count", 0) + 1
-            if state["message_count"] % THRESHOLD == 0:
+            if state["message_count"] % THRESHOLD == 0 and not mention_detected and not auto_replied:
                 payload = {
                     "chat_id": CHAT_ID,
-                    "text": radical_question(state.get("recent_messages", [])),
+                    "text": radical_question(state.get("recent_messages", []), state, sender.get("username")),
                     "reply_to_message_id": message["message_id"],
                     "allow_sending_without_reply": True,
                 }
