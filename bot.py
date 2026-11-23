@@ -75,7 +75,9 @@ def api(method, payload=None, timeout=40):
     except (urllib.error.URLError, TimeoutError) as exc:
         raise RuntimeError(f"Telegram API request failed ({method})") from exc
     if not result.get("ok"):
-        raise RuntimeError(f"Telegram API returned an error for {method}")
+        # Telegram's description helps diagnose cases such as two pollers
+        # competing for getUpdates. It contains no bot token or message text.
+        raise RuntimeError(f"Telegram {method} failed: {result.get('description', 'unknown API error')}")
     return result["result"]
 
 
@@ -167,6 +169,7 @@ def radical_question(recent):
                 answer = json.loads(response.read().decode("utf-8"))
             question = answer["choices"][0]["message"]["content"].strip()
         except (urllib.error.URLError, TimeoutError, KeyError, IndexError, json.JSONDecodeError):
+            print("OpenAI question generation failed; using local fallback.", flush=True)
             question = None
     if not question:
         question = FALLBACK_QUESTIONS[message_topic(context)]
@@ -252,6 +255,7 @@ def inspired_reply(recent):
             result = json.loads(response.read().decode("utf-8"))
         return result["choices"][0]["message"]["content"].strip()
     except (urllib.error.URLError, TimeoutError, KeyError, IndexError, json.JSONDecodeError):
+        print("OpenAI mention reply failed; using a brief fallback response.", flush=True)
         return "Не атрымалася сфармаваць адказ зараз. Паспрабуйце пазначыць мяне яшчэ раз пазней."
 
 
@@ -286,7 +290,7 @@ def main():
     start_offset(state)
     max_seconds = int(os.getenv("BOT_MAX_SECONDS", "0"))
     deadline = time.monotonic() + max_seconds if max_seconds > 0 else None
-    print("Bot is running; token is not logged.")
+    print("Bot polling started; credentials and message text are not logged.", flush=True)
     while deadline is None or time.monotonic() < deadline:
         now = datetime.now(TZ)
         today = now.date().isoformat()
@@ -311,9 +315,11 @@ def main():
                 "offset": state.get("offset", 0), "timeout": poll_timeout,
                 "allowed_updates": json.dumps(["message"]),
             }, timeout=poll_timeout + 8)
-        except RuntimeError:
+        except RuntimeError as exc:
+            print(f"Telegram polling problem: {exc}", flush=True)
             time.sleep(min(5, max(0, deadline - time.monotonic())) if deadline else 5)
             continue
+        print(f"Telegram returned {len(updates)} update(s).", flush=True)
         for update in updates:
             state["offset"] = update["update_id"] + 1
             message = update.get("message", {})
@@ -321,6 +327,9 @@ def main():
             if str(chat.get("id")) != str(CHAT_ID) or message.get("from", {}).get("is_bot"):
                 save_state(state)
                 continue
+            mention_detected = is_mention(message)
+            if mention_detected:
+                print("Target-group mention detected; preparing a reply.", flush=True)
             sender = message.get("from", {})
             sender_name = " ".join(filter(None, [sender.get("first_name"), sender.get("last_name")])) or "Удзельнік"
             message_text = message.get("text") or message.get("caption") or "[медыя або паведамленне без тэксту]"
@@ -330,7 +339,7 @@ def main():
                 state["message_count"] = state.get("message_count", 0) + 1
                 save_state(state)
                 continue
-            if is_mention(message):
+            if mention_detected:
                 answer = inspired_reply(state["recent_messages"])
                 try:
                     api("sendMessage", {
@@ -339,8 +348,9 @@ def main():
                         "reply_to_message_id": message["message_id"],
                         "allow_sending_without_reply": True,
                     })
-                except RuntimeError:
-                    pass
+                    print("Mention reply sent.", flush=True)
+                except RuntimeError as exc:
+                    print(f"Could not send mention reply: {exc}", flush=True)
             state["message_count"] = state.get("message_count", 0) + 1
             if state["message_count"] % THRESHOLD == 0:
                 payload = {
@@ -351,11 +361,12 @@ def main():
                 }
                 try:
                     api("sendMessage", payload)
-                except RuntimeError:
-                    pass
+                    print("Fortieth-message question sent.", flush=True)
+                except RuntimeError as exc:
+                    print(f"Could not send fortieth-message question: {exc}", flush=True)
             save_state(state)
     save_state(state)
-    print("Bot run finished; state saved.")
+    print("Bot run finished; state saved.", flush=True)
 
 
 if __name__ == "__main__":
