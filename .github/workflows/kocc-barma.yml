@@ -2,7 +2,15 @@ name: Kocc Barma Telegram bot
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "2-59/5 * * * *"
+  push:
+    branches: [main]
+    paths:
+      - bot.py
+      - story_card.py
+      - conversation-bank.json
+      - corpus.json
+      - .github/workflows/kocc-barma.yml
   workflow_dispatch:
 
 permissions:
@@ -14,15 +22,18 @@ concurrency:
 
 jobs:
   bot:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 18
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      TELEGRAM_BUSINESS_CONNECTION_ID: ${{ secrets.TELEGRAM_BUSINESS_CONNECTION_ID }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_MODEL: gpt-4o-mini
-      BOT_MAX_SECONDS: "210"
+      BOT_MAX_SECONDS: "255"
       MORNING_TIME: "09:00"
+      STORY_TIME: "20:30"
       POLL_TIME: "18:00"
       REPLY_EVERY: "40"
       DISCARD_BACKLOG: "false"
@@ -45,25 +56,57 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Prepare persisted bot state
-        shell: bash
-        run: |
-          printf '{"message_count":0,"last_morning_date":null,"last_poll_date":null,"last_quote_id":null,"offset":0,"recent_messages":[]}' > state.json
+      - name: Install native Story renderer
+        if: env.TELEGRAM_BUSINESS_CONNECTION_ID != ''
+        run: python -m pip install Pillow==13.0.0
 
-      - name: Restore bot state
+      - name: Test updated bot
+        if: github.event_name == 'push'
+        env:
+          TELEGRAM_BOT_TOKEN: test
+          TELEGRAM_CHAT_ID: "-10042"
+        run: python -m unittest -q
+
+      - name: Restore encrypted bot state
+        id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: state.enc
+          key: kocc-private-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: kocc-private-v1-
+
+      - name: Import previous bot state on first upgrade
+        if: steps.restore.outputs.cache-matched-key == ''
         uses: actions/cache/restore@v4
         with:
           path: state.json
-          key: kocc-state-${{ github.run_id }}-${{ github.run_attempt }}
+          key: kocc-state-legacy-import
           restore-keys: kocc-state-
 
+      - name: Decrypt restored state
+        if: steps.restore.outputs.cache-matched-key != ''
+        run: openssl enc -d -aes-256-cbc -pbkdf2 -in state.enc -out state.json -pass env:TELEGRAM_BOT_TOKEN
+
       - name: Run bot
-        run: python bot.py
+        id: poll
+        shell: bash
+        env:
+          WINDOWS: ${{ github.event_name == 'schedule' && '3' || '1' }}
+        run: |
+          for ((window=1; window<=WINDOWS; window++)); do
+            echo "Starting polling window ${window} of ${WINDOWS}"
+            python bot.py
+          done
+
+      - name: Encrypt updated state
+        id: encrypt
+        if: always() && (steps.poll.outcome == 'success' || steps.poll.outcome == 'failure') && hashFiles('state.json') != ''
+        run: openssl enc -aes-256-cbc -salt -pbkdf2 -in state.json -out state.enc -pass env:TELEGRAM_BOT_TOKEN
 
       - name: Save bot state
-        if: always()
+        if: always() && steps.encrypt.outcome == 'success'
         uses: actions/cache/save@v4
         with:
-          path: state.json
-          key: kocc-state-${{ github.run_id }}-${{ github.run_attempt }}
+          path: state.enc
+          key: kocc-private-v1-${{ github.run_id }}-${{ github.run_attempt }}
 

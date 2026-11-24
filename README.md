@@ -20,37 +20,46 @@ The Wolof forms in `corpus.json` follow the editors' historical transcription an
 
 The manuscript/oral material is old, but this modern edition may have its own rights. Check the edition's reuse terms before redistributing the complete transcription. These Belarusian renderings are new, provisional translations of short sayings and not a substitute for rights clearance for a commercial book edition.
 
-## Bot setup
+## Running Kocc
 
-Python 3.10 or later; no third-party packages. The installed bot is `@koccbarmafallbot`, configured for the group whose chat ID is set in `run-bot.ps1`. The bot uses Telegram long polling, so do not configure a webhook for it.
+`bot.py` runs @koccbarmafallbot in the Telegram group selected by `TELEGRAM_CHAT_ID`. It uses long polling. Keep one poller for this token and remove any Telegram webhook before starting. Group administrator status or disabled group privacy lets Telegram deliver ordinary messages.
 
-PowerShell example (the token remains in the current shell's environment):
+The chat bot runs on Python 3.10 or later. For example, from PowerShell:
 
 ```powershell
 $env:TELEGRAM_BOT_TOKEN = "YOUR_TOKEN"
 $env:TELEGRAM_CHAT_ID = "-1001234567890"
-$env:BOT_TIMEZONE = "Europe/Minsk"
-$env:MORNING_TIME = "09:00"
 python .\bot.py
 ```
 
-The morning post is sent once per day at 09:00 Europe/Minsk as a short original fable paired with a historical proverb. A native opinion poll is posted Sundays at 18:00. `conversation-bank.json` stores contemporary, original Belarusian aphorisms, discussion prompts, and fables separately from the historical corpus; they are not presented as authentic Kocc Barma quotations. On relevant messages, the bot may add a local-bank reply, capped at four a day with at least 30 minutes between them; these do not use the OpenAI API. Every 40th new human message can prompt a general question or invite a recently active member who has not been mentioned that day. The bot does not single out a fixed member or mute people for disagreement. On `@koccbarmafallbot` mention, it uses the last five messages as context and can respond in Belarusian; only this contextual reply uses OpenAI, when `OPENAI_API_KEY` is set. The bot posts under its visible Telegram account. `DISCARD_BACKLOG=true` skips queued messages from before startup. One in five historical-quote posts omits the in-message attribution; Telegram still shows the bot account as sender.
+All times below use Minsk time (UTC+3). A delayed runner catches up once for the current local date.
 
-## GitHub Actions hosting
+| When | What Kocc sends |
+| --- | --- |
+| 09:00 daily | A short original fable with a historical proverb on the same theme |
+| 20:30 daily | A standalone fable from the rotating story collection |
+| Sunday at 18:00 | An anonymous-vote opinion poll |
+| On request | `/story`, `/wisdom`, `/question`, `/counter`, or `/poll` |
 
-The repository includes `.github/workflows/kocc-barma.yml`. It runs the bot for 210 seconds every five minutes, restores/saves the message counter and Telegram update offset through GitHub Actions cache, and exits before the runner's five-minute job limit. This keeps the bot running without a local computer, but replies can take several minutes and GitHub may delay scheduled runs. The workflow must be on the repository's default branch to receive scheduled events.
+Use `/story friendship` or reply to a message with `/story` to pick a theme. The stories and responses in `conversation-bank.json` are contemporary Belarusian writing. Historical translations come from `corpus.json` and retain their source number. Scheduled stories rotate through the collection. Topic requests give preference to the least recently used stories for that theme.
 
-Add these repository secrets under **Settings → Secrets and variables → Actions**:
+Mention Kocc or reply to one of his messages for a contextual answer. He uses up to five excerpts, including the message being replied to, and gives the newest speaker priority. With `OPENAI_API_KEY` set, direct questions use OpenAI and may incur charges. Local replies work without a key and cover all six themes. Occasional discussion replies are capped at four a day with a 30-minute cooldown. Every 40th human message may prompt a question.
 
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_CHAT_ID`
-- `OPENAI_API_KEY` (optional; without it, mention replies use the local fallback)
+### Speaking under the group name
 
-The workflow refers to secrets by name only. Do not paste credentials into the source, workflow, README, or commit history. Since the Telegram token was shared in chat, rotate it with BotFather before saving the replacement as a GitHub secret. To start after setting secrets, use **Actions → Kocc Barma Telegram bot → Run workflow**. Scheduled runs then start automatically every five minutes. OpenAI use can incur API charges.
+Kocc reads his existing **Remain Anonymous** administrator setting at startup. With it enabled, Telegram controls the group sender identity. Kocc identifies himself in roughly four out of five text posts and leaves the other posts unsigned. The workflow logs whether Telegram returned the group as sender, without printing chat messages or identifiers. A custom administrator title can also appear beside a message. [Telegram administrator rights](https://core.telegram.org/api/rights#anonymous-admins)
 
-GitHub-hosted runners are ephemeral, so the bot's state is kept in Actions cache rather than committed to the repository. If the cache is cleared, the counter and recent-message context restart from zero.
+### Native Telegram Stories
 
-For local Windows operation, `set-secrets.ps1` stores the Telegram secret encrypted with the current Windows account's DPAPI; `install-startup.ps1` creates a hidden logon shortcut. Run the PowerShell scripts from this folder. To enable mention-based analysis locally, run `set-openai-key.ps1` in a local terminal and then `restart-bot.ps1`. The key is encrypted for this Windows account. The bot must be an administrator or have group privacy disabled (the bot's privacy setting is also adjustable through Telegram's `setMySettings` API) so Telegram delivers ordinary group messages; without this, the 40-message count and context window cannot work.
+To publish the evening fable as a 24-hour photo Story, connect the intended Telegram Business account to Kocc, grant **Manage Stories**, and set the repository secret `TELEGRAM_BUSINESS_CONNECTION_ID` to that connection's ID. Telegram supplies the ID in the `business_connection.id` update when a connection is created or changed. The workflow installs Pillow when the secret is present. For local native publishing, install it with `python -m pip install Pillow`. The bot uploads a fresh 1080 × 1920 card with the story as its caption. Group stories also work independently when the account connection is absent or unavailable. [Telegram Story publishing](https://core.telegram.org/bots/api#poststory)
 
-To change topics or eligible quotations, edit `TOPICS`, `TOPIC_QUOTES`, and `ELIGIBLE_IDS` in `bot.py`. Before launch, have a Wolof speaker validate the translations and a community/cultural reviewer approve the selected sayings.
+## GitHub Actions
+
+Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the repository's Actions secrets. `OPENAI_API_KEY` and `TELEGRAM_BUSINESS_CONNECTION_ID` are optional. The workflow runs on `main`. Changes to the bot, content, or workflow start it automatically. **Actions → Kocc Barma Telegram bot → Run workflow** starts it manually.
+
+The schedule requests a run every five minutes, starting at two minutes past the hour. GitHub can delay or drop scheduled events. Each scheduled job starts three consecutive 255-second polling sessions to cover more of the gap before the next event. Updates to `main` and manual starts run one session. All triggers share a concurrency group so only one runner polls Telegram at a time. [GitHub schedule events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
+
+The workflow imports the previous state cache on first upgrade. New caches encrypt the offset, recent context, and daily delivery records with the Telegram bot token. After rotating the token, clear the old `kocc-private-v1-` and legacy `kocc-state-` caches before starting fresh. Clearing state loses the current day's delivery records. Locally, `BOT_STATE_FILE` selects the state file and `DISCARD_BACKLOG=true` skips pending updates on a fresh start.
+
+Edit `MORNING_TIME`, `STORY_TIME`, or `POLL_TIME` in the workflow to change delivery times. `TOPICS`, `TOPIC_QUOTES`, and `ELIGIBLE_IDS` in `bot.py` control the thematic matches and eligible historical translations.
 

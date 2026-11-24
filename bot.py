@@ -1,13 +1,15 @@
-"""Small-group Kocc Barma-inspired discussion bot; Python 3.10+, stdlib only."""
+"""Kocc Barma-inspired Telegram group bot with optional native Story cards."""
 import json
 import os
 import random
+import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parent
 CORPUS = json.loads((ROOT / "corpus.json").read_text(encoding="utf-8"))
@@ -22,6 +24,9 @@ BOT_USERNAME = "@koccbarmafallbot"
 TZ = timezone(timedelta(hours=3), "Europe/Minsk")
 SEND_AT = os.getenv("MORNING_TIME", "09:00")
 POLL_AT = os.getenv("POLL_TIME", "18:00")
+STORY_AT = os.getenv("STORY_TIME", "20:30")
+STORY_CONNECTION = os.getenv("TELEGRAM_BUSINESS_CONNECTION_ID", "").strip()
+UNSIGNED_CHANCE = 0.20
 THRESHOLD = int(os.getenv("REPLY_EVERY", "40"))
 AUTO_REPLY_CHANCE = float(os.getenv("AUTO_REPLY_CHANCE", "0.22"))
 AUTO_REPLY_COOLDOWN_SECONDS = int(os.getenv("AUTO_REPLY_COOLDOWN_SECONDS", "1800"))
@@ -33,9 +38,9 @@ BASE_URL = f"https://api.telegram.org/bot{TOKEN}/"
 ELIGIBLE_IDS = {2, 3, 5, 9, 12, 13, 18, 27}
 QUOTES = [q for q in CORPUS if q["id"] in ELIGIBLE_IDS and q["belarusian"]]
 TOPICS = {
-    "friendship": ("сябар", "сяброў", "дружб", "friend", "ami", "друг", "друж"),
+    "friendship": ("сябар", "сябр", "дружб", "friend", "ami", "друг", "друж", "падтрым", "давер"),
     "leadership": ("улада", "улад", "лідар", "кіраў", "кароль", "government", "power", "roi", "leader"),
-    "justice": ("справяд", "права", "суд", "justice", "правосуд", "раўнапраў"),
+    "justice": ("справяд", "несправяд", "права", "суд", "justice", "injust", "fair", "unfair", "раўнапраў"),
     "community": ("суполь", "народ", "краін", "грамад", "community", "people", "country"),
     "faith": ("вера", "рэлігі", "бог", "faith", "religion", "god"),
     "intolerance": ("цярпім", "талеран", "нецярп", "hate", "intoler", "разлад"),
@@ -60,18 +65,22 @@ POLL_QUESTIONS = [
         "Тыя, каго закранае рашэнне", "Абраныя прадстаўнікі", "Усе праз адкрытую размову", "Ніхто не павінен мець апошняга слова",
     ]),
 ]
-FALLBACK_QUESTIONS = {
-    "justice": "калі ўсе прызнаюць несправядлівасць, але ніхто не рызыкуе назваць яе, што насамрэч падтрымлівае гэты парадак?",
-    "leadership": "каму служыць гэтае правіла — людзям ці тым, хто атрымаў права яго вызначаць?",
-    "community": "хто застаецца па-за нашым «мы», калі мы гаворым ад імя ўсёй супольнасці?",
-    "intolerance": "якую думку мы забараняем сабе нават абмеркаваць, і каму выгадна гэтае маўчанне?",
-    "default": "што мы называем непазбежным толькі таму, што баімся разам змяніць гэта?",
-}
 
 
-def api(method, payload=None, timeout=40):
-    body = urllib.parse.urlencode(payload or {}).encode()
-    req = urllib.request.Request(BASE_URL + method, data=body)
+def api(method, payload=None, timeout=40, photo=None):
+    headers = {}
+    if photo is None:
+        body = urllib.parse.urlencode(payload or {}).encode()
+    else:
+        boundary = uuid4().hex
+        headers["Content-Type"] = "multipart/form-data; boundary=" + boundary
+        fields = [f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
+                  for k, v in payload.items()]
+        file_header = (f'--{boundary}\r\nContent-Disposition: form-data; name="card"; filename="story.jpg"\r\n'
+                       'Content-Type: image/jpeg\r\n\r\n')
+        fields.extend([file_header.encode(), photo, f'\r\n--{boundary}--\r\n'.encode()])
+        body = b"".join(fields)
+    req = urllib.request.Request(BASE_URL + method, data=body, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             result = json.loads(response.read().decode("utf-8"))
@@ -112,52 +121,85 @@ def save_state(state):
     tmp.replace(STATE_PATH)
 
 
-def choose_quote(text="", exclude=None):
-    text = text.casefold()
-    ids = []
-    for topic, words in TOPICS.items():
-        if any(word in text for word in words):
-            ids.extend(TOPIC_QUOTES[topic])
-    candidates = [q for q in QUOTES if (not ids or q["id"] in ids) and q["id"] != exclude]
-    if not candidates:
-        candidates = [q for q in QUOTES if q["id"] != exclude]
-    if not candidates:
-        candidates = QUOTES
-    # Rotation makes repeated fallback quotes less likely and survives restarts.
-    previous = load_state().get("last_quote_id")
+def choose_quote(state, topic="default"):
+    ids = TOPIC_QUOTES.get(topic)
+    candidates = [q for q in QUOTES if not ids or q["id"] in ids]
+    previous = state.get("last_quote_id")
     quote = next((q for q in candidates if q["id"] > (previous or 0)), candidates[0])
-    state = load_state()
     state["last_quote_id"] = quote["id"]
-    save_state(state)
     return quote
 
 
 def quote_text(quote):
-    text = quote["belarusian"]
-    # Telegram still displays the bot account as sender; this 20% variation
-    # only withholds the in-message attribution/signature.
-    if random.random() >= 0.20:
-        text += "\n\n— Коц Барма (вольны пераклад паводле гістарычнай запісы)"
-    return text
+    return f'{quote["belarusian"]}\n\nЗ гістарычнага зборніка Коц Бармы, № {quote["id"]}. Вольны пераклад.'
 
 
-def maybe_kocc_signature(text):
-    if random.random() >= 0.20:
-        return text + "\n\n— пытанне ў духу Коц Бармы"
-    return text
+def anonymous_admin_enabled():
+    try:
+        me = api("getMe")
+        member = api("getChatMember", {"chat_id": CHAT_ID, "user_id": me["id"]})
+        return bool(member.get("is_anonymous"))
+    except RuntimeError as exc:
+        print(f"Could not check anonymous administrator status: {exc}", flush=True)
+        return False
+
+
+def send_text(text, state, message=None):
+    if state.get("anonymous_admin") and random.random() >= UNSIGNED_CHANCE:
+        text = f"{text}\n\n— {BOT_USERNAME}"
+    payload = {"chat_id": CHAT_ID, "text": text}
+    if message:
+        payload["reply_parameters"] = json.dumps({"message_id": message["message_id"], "allow_sending_without_reply": True})
+        if message.get("is_topic_message"):
+            payload["message_thread_id"] = message["message_thread_id"]
+    sent = api("sendMessage", payload)
+    state["sent_message_ids"] = (state.get("sent_message_ids", []) + [sent["message_id"]])[-50:]
+    group_sender = sent.get("sender_chat", {}).get("id") == sent["chat"]["id"]
+    print(f"Telegram delivered text. Group shown as sender: {group_sender}.", flush=True)
 
 
 def message_topic(text):
-    text = text.casefold()
-    for topic, words in TOPICS.items():
-        if any(word in text for word in words):
+    words = re.findall(r"[^\W\d_]+", text.casefold())
+    scores = {topic: sum(word.startswith(stems) for word in words)
+              for topic, stems in TOPICS.items()}
+    best = max(scores, key=scores.get)
+    return best if scores[best] else "default"
+
+
+def context_topic(recent):
+    for entry in reversed(recent[-5:]):
+        topic = message_topic(entry.get("text", ""))
+        if topic != "default":
             return topic
     return "default"
 
 
-def choose_local_text(group, topic):
-    entries = CONVERSATION_BANK[group]
-    return random.choice(entries.get(topic, entries.get("default", [])))
+def choose_local_text(group, topic, state):
+    entries = CONVERSATION_BANK[group][topic]
+    key = "recent_" + group
+    recent = state.get(key, [])
+    unused = [entry for entry in entries if entry not in recent]
+    choice = random.choice(unused) if unused else min(entries, key=recent.index)
+    state[key] = ([entry for entry in recent if entry != choice] + [choice])[-12:]
+    return choice
+
+
+def choose_story(state, topic="default"):
+    stories = CONVERSATION_BANK["stories"]
+    pool = [s for s in stories if s["topic"] == topic] or stories
+    history = state.get("story_history", [])
+    unread = [s for s in pool if s["title"] not in history]
+    return random.choice(unread) if unread else min(pool, key=lambda s: history.index(s["title"]))
+
+
+def remember_story(state, story):
+    title = story["title"]
+    history = [t for t in state.get("story_history", []) if t != title]
+    state["story_history"] = (history + [title])[-len(CONVERSATION_BANK["stories"]):]
+
+
+def story_text(story):
+    return f'{story["title"]}\n\n{story["text"]}'
 
 
 def choose_member_to_invite(state, current_username=None):
@@ -180,8 +222,7 @@ def choose_member_to_invite(state, current_username=None):
 
 
 def radical_question(recent, state, current_username=None):
-    context = "\n".join(x.get("text", "") for x in recent[-5:])
-    question = choose_local_text("questions", message_topic(context))
+    question = choose_local_text("questions", context_topic(recent), state)
     member = choose_member_to_invite(state, current_username)
     if member:
         return f"{member}, калі зручна, як ты гэта бачыш?\n{question}"
@@ -190,7 +231,7 @@ def radical_question(recent, state, current_username=None):
 
 def maybe_auto_reply(message, state):
     text = (message.get("text") or message.get("caption") or "").strip()
-    if len(text) < 28 or text.startswith("/") or is_mention(message):
+    if len(text) < 28 or text.startswith("/"):
         return False
     today = datetime.now(TZ).date().isoformat()
     if state.get("auto_reply_date") != today:
@@ -208,19 +249,14 @@ def maybe_auto_reply(message, state):
     chance = min(0.45, AUTO_REPLY_CHANCE + (0.12 if question_like else 0))
     if random.random() > chance:
         return False
-    response = choose_local_text("responses", topic)
+    response = choose_local_text("responses", topic, state)
     sender_username = message.get("from", {}).get("username")
     if random.random() < 0.30:
         member = choose_member_to_invite(state, sender_username)
         if member:
             response = f"{member}, калі зручна, што ты думаеш?\n{response}"
     try:
-        api("sendMessage", {
-            "chat_id": CHAT_ID,
-            "text": response,
-            "reply_to_message_id": message["message_id"],
-            "allow_sending_without_reply": True,
-        })
+        send_text(response, state, message)
     except RuntimeError as exc:
         print(f"Could not send local discussion reply: {exc}", flush=True)
         return False
@@ -245,49 +281,63 @@ def send_opinion_poll(state):
 
 
 def send_quick_command(message, state):
-    text = (message.get("text") or "").casefold().split()[0]
-    if text.startswith("/wisdom"):
-        q = choose_quote()
+    command = message["text"].split(maxsplit=1)[0].casefold()
+    name, _, target = command.partition("@")
+    if target and "@" + target != BOT_USERNAME:
+        return False
+    recent = discussion_context(message, state)
+    if name == "/story":
+        story = choose_story(state, context_topic(recent))
+        send_text(story_text(story), state, message)
+        remember_story(state, story)
+        return True
+    if name == "/wisdom":
+        q = choose_quote(state, context_topic(recent))
         body = quote_text(q)
-    elif text.startswith("/question") or text.startswith("/counter"):
-        body = radical_question(state.get("recent_messages", []), state, message.get("from", {}).get("username"))
-    elif text.startswith("/poll"):
+    elif name in ("/question", "/counter"):
+        body = radical_question(recent, state, message.get("from", {}).get("username"))
+    elif name == "/poll":
         send_opinion_poll(state)
         return True
     else:
         return False
-    api("sendMessage", {"chat_id": CHAT_ID, "text": body, "reply_to_message_id": message["message_id"]})
+    send_text(body, state, message)
     return True
 
 
-def is_mention(message):
+def is_addressed(message, state):
     text = (message.get("text") or message.get("caption") or "").casefold()
-    if "@koccbarmafallbot" in text:
-        return True
-    return any(
-        entity.get("type") == "mention" and "@koccbarmafallbot" in text[
-            entity.get("offset", 0):entity.get("offset", 0) + entity.get("length", 0)
-        ].casefold()
-        for entity in message.get("entities", []) + message.get("caption_entities", [])
-    )
+    parent = message.get("reply_to_message", {})
+    sender = parent.get("from", {})
+    return bool(re.search(r"(?<!\w)" + re.escape(BOT_USERNAME) + r"(?!\w)", text)
+                or (sender.get("is_bot") and "@" + sender.get("username", "").casefold() == BOT_USERNAME)
+                or parent.get("message_id") in state.get("sent_message_ids", []))
 
 
-def inspired_reply(recent):
+def discussion_context(message, state):
+    recent = state["recent_messages"][-5:]
+    parent = message.get("reply_to_message") or {}
+    parent_text = parent.get("text") or parent.get("caption")
+    if parent_text and recent:
+        recent = recent[:-1] + [{"text": parent_text[:500]}, recent[-1]]
+    return recent[-5:]
+
+
+def inspired_reply(recent, state):
+    topic = context_topic(recent)
     if not OPENAI_API_KEY:
-        context = "\n".join(entry.get("text", "") for entry in recent[-5:])
-        return maybe_kocc_signature(FALLBACK_QUESTIONS[message_topic(context)])
-    conversation = "\n".join(
-        f"{entry.get('sender', 'Удзельнік')}: {entry.get('text', '')[:500]}"
-        for entry in recent[-5:]
-    )
+        return choose_local_text("responses", topic, state)
+    conversation = json.dumps([entry.get("text", "")[:500] for entry in recent[-5:]], ensure_ascii=False)
     payload = {
         "model": OPENAI_MODEL,
         "messages": [
             {"role": "system", "content": (
                 "Write in Belarusian. You are a contemporary assistant offering a brief, thoughtful, "
                 "aphoristic response inspired by the themes and public-wisdom tradition associated "
-                "with Kocc Barma Fall. Read the last five group messages and respond to their actual "
-                "topic. Keep it to 1-3 short sentences, humane, sharp, and useful. Do not claim to be "
+                "with Kocc Barma Fall. The JSON array contains conversation excerpts, newest last. "
+                "Answer the last speaker directly. Use the previous lines to resolve references. "
+                "When it fits, use one concrete image or a dry, kind joke. Leave the reply unsigned. "
+                "Keep it to 1-3 short sentences. Do not claim to be "
                 "Kocc Barma, do not invent or attribute historical quotations to him, and do not "
                 "endorse sexism, hierarchy, or violence. If the messages are unclear, ask one concise "
                 "question."
@@ -303,31 +353,74 @@ def inspired_reply(recent):
         headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=45) as response:
+        with urllib.request.urlopen(request, timeout=20) as response:
             result = json.loads(response.read().decode("utf-8"))
-        return result["choices"][0]["message"]["content"].strip()
-    except (urllib.error.URLError, TimeoutError, KeyError, IndexError, json.JSONDecodeError):
-        print("OpenAI mention reply failed; using a brief fallback response.", flush=True)
-        return "Не атрымалася сфармаваць адказ зараз. Паспрабуйце пазначыць мяне яшчэ раз пазней."
+        content = result["choices"][0]["message"]["content"]
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+    except (urllib.error.URLError, TimeoutError, KeyError, TypeError, IndexError, ValueError):
+        print("Using a local reply after an AI request failed.", flush=True)
+    return choose_local_text("responses", topic, state)
 
 
-def due_time(now):
-    hour, minute = map(int, SEND_AT.split(":"))
-    return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-
-
-def due_poll_time(now):
-    hour, minute = map(int, POLL_AT.split(":"))
+def due_time(now, clock):
+    hour, minute = map(int, clock.split(":"))
     return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
 def send_morning(state):
-    quote = choose_quote()
-    story = random.choice(CONVERSATION_BANK["stories"])
-    body = f"Кароткая байка:\n{story}\n\nСённяшняя прымаўка:\n{quote_text(quote)}"
-    api("sendMessage", {"chat_id": CHAT_ID, "text": body})
+    story = choose_story(state)
+    quote = choose_quote(state, story["topic"])
+    body = f"{story_text(story)}\n\nСённяшняя прымаўка\n{quote_text(quote)}"
+    send_text(body, state)
+    remember_story(state, story)
     state["last_morning_date"] = datetime.now(TZ).date().isoformat()
     save_state(state)
+
+
+def send_evening(state, now):
+    today = now.date().isoformat()
+    if state.get("last_evening_date") != today:
+        story = choose_story(state)
+        send_text(story_text(story), state)
+        remember_story(state, story)
+        state.update(last_evening_date=today, evening_title=story["title"])
+        save_state(state)
+    if not STORY_CONNECTION or state.get("last_native_date") == today:
+        return
+    story = next((s for s in CONVERSATION_BANK["stories"] if s["title"] == state["evening_title"]), None)
+    if story is None:
+        return
+    from story_card import render_card
+    api("postStory", {
+        "business_connection_id": STORY_CONNECTION,
+        "content": json.dumps({"type": "photo", "photo": "attach://card"}),
+        "active_period": 86400,
+        "caption": story_text(story),
+    }, photo=render_card(story))
+    state["last_native_date"] = today
+    save_state(state)
+    print("Published the native Telegram Story.", flush=True)
+
+
+def scheduled_posts(state, now):
+    today = now.date().isoformat()
+    jobs = [
+        ("morning", now >= due_time(now, SEND_AT) and state.get("last_morning_date") != today, send_morning),
+        ("poll", now.weekday() == 6 and now >= due_time(now, POLL_AT) and state.get("last_poll_date") != today, send_opinion_poll),
+        ("story", now >= due_time(now, STORY_AT) and (state.get("last_evening_date") != today
+                  or (STORY_CONNECTION and state.get("last_native_date") != today)), lambda s: send_evening(s, now)),
+    ]
+    retry = state.setdefault("retry_after", {})
+    for name, due, send in jobs:
+        if due and now.timestamp() >= retry.get(name, 0):
+            try:
+                send(state)
+                retry.pop(name, None)
+            except (RuntimeError, ImportError, OSError) as exc:
+                print(f"Scheduled {name} delivery failed: {exc}", flush=True)
+                retry[name] = now.timestamp() + 900
+                save_state(state)
 
 
 def start_offset(state):
@@ -341,25 +434,15 @@ def start_offset(state):
 
 def main():
     state = load_state()
+    state["anonymous_admin"] = anonymous_admin_enabled()
+    print(f"Group anonymous administrator enabled: {state['anonymous_admin']}. Native Stories configured: {bool(STORY_CONNECTION)}.", flush=True)
     start_offset(state)
     max_seconds = int(os.getenv("BOT_MAX_SECONDS", "0"))
     deadline = time.monotonic() + max_seconds if max_seconds > 0 else None
     print("Bot polling started; credentials and message text are not logged.", flush=True)
     while deadline is None or time.monotonic() < deadline:
         now = datetime.now(TZ)
-        today = now.date().isoformat()
-        if now >= due_time(now) and state.get("last_morning_date") != today:
-            try:
-                send_morning(state)
-            except RuntimeError:
-                time.sleep(min(5, max(0, deadline - time.monotonic())) if deadline else 5)
-                continue
-        if now.weekday() == 6 and now >= due_poll_time(now) and state.get("last_poll_date") != today:
-            try:
-                send_opinion_poll(state)
-            except RuntimeError:
-                time.sleep(min(5, max(0, deadline - time.monotonic())) if deadline else 5)
-                continue
+        scheduled_posts(state, now)
         remaining = (deadline - time.monotonic()) if deadline else 30
         if remaining < 3:
             break
@@ -375,6 +458,8 @@ def main():
             continue
         print(f"Telegram returned {len(updates)} update(s).", flush=True)
         for update in updates:
+            if deadline and time.monotonic() >= deadline:
+                break
             state["offset"] = update["update_id"] + 1
             message = update.get("message", {})
             chat = message.get("chat", {})
@@ -385,7 +470,7 @@ def main():
             if message.get("from", {}).get("is_bot"):
                 save_state(state)
                 continue
-            mention_detected = is_mention(message)
+            mention_detected = is_addressed(message, state)
             print(f"Target-group message received; mention_detected={mention_detected}.", flush=True)
             if mention_detected:
                 print("Target-group mention detected; preparing a reply.", flush=True)
@@ -398,33 +483,28 @@ def main():
                 "text": message_text[:500],
             })
             state["recent_messages"] = state["recent_messages"][-10:]
-            if (message.get("text") or "").startswith("/") and send_quick_command(message, state):
-                state["message_count"] = state.get("message_count", 0) + 1
-                save_state(state)
-                continue
-            if mention_detected:
-                answer = inspired_reply(state["recent_messages"])
+            if (message.get("text") or "").startswith("/"):
                 try:
-                    api("sendMessage", {
-                        "chat_id": CHAT_ID,
-                        "text": answer,
-                        "reply_to_message_id": message["message_id"],
-                        "allow_sending_without_reply": True,
-                    })
+                    handled = send_quick_command(message, state)
+                except RuntimeError as exc:
+                    print(f"Command delivery failed: {exc}", flush=True)
+                    handled = True
+                if handled or "@" in message["text"].split()[0]:
+                    state["message_count"] = state.get("message_count", 0) + 1
+                    save_state(state)
+                    continue
+            if mention_detected:
+                answer = inspired_reply(discussion_context(message, state), state)
+                try:
+                    send_text(answer, state, message)
                     print("Mention reply sent.", flush=True)
                 except RuntimeError as exc:
                     print(f"Could not send mention reply: {exc}", flush=True)
             auto_replied = False if mention_detected else maybe_auto_reply(message, state)
             state["message_count"] = state.get("message_count", 0) + 1
             if state["message_count"] % THRESHOLD == 0 and not mention_detected and not auto_replied:
-                payload = {
-                    "chat_id": CHAT_ID,
-                    "text": radical_question(state.get("recent_messages", []), state, sender.get("username")),
-                    "reply_to_message_id": message["message_id"],
-                    "allow_sending_without_reply": True,
-                }
                 try:
-                    api("sendMessage", payload)
+                    send_text(radical_question(state["recent_messages"], state, sender.get("username")), state, message)
                     print("Fortieth-message question sent.", flush=True)
                 except RuntimeError as exc:
                     print(f"Could not send fortieth-message question: {exc}", flush=True)
