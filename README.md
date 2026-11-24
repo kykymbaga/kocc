@@ -49,13 +49,9 @@ Mention Kocc or reply to one of his messages for a contextual answer. He uses up
 
 Kocc reads his existing **Remain Anonymous** administrator setting at startup. With it enabled, Telegram controls the group sender identity. Kocc identifies himself in roughly four out of five text posts and leaves the other posts unsigned. The workflow logs whether Telegram returned the group as sender, without printing chat messages or identifiers. A custom administrator title can also appear beside a message. [Telegram administrator rights](https://core.telegram.org/api/rights#anonymous-admins)
 
-### Native Telegram Stories
-
-To publish the evening fable as a 24-hour photo Story, connect the intended Telegram Business account to Kocc, grant **Manage Stories**, and set the repository secret `TELEGRAM_BUSINESS_CONNECTION_ID` to that connection's ID. Telegram supplies the ID in the `business_connection.id` update when a connection is created or changed. The workflow installs Pillow when the secret is present. For local native publishing, install it with `python -m pip install Pillow`. The bot uploads a fresh 1080 × 1920 card with the story as its caption. Group stories also work independently when the account connection is absent or unavailable. [Telegram Story publishing](https://core.telegram.org/bots/api#poststory)
-
 ## GitHub Actions
 
-Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the repository's Actions secrets. `OPENAI_API_KEY` and `TELEGRAM_BUSINESS_CONNECTION_ID` are optional. The workflow runs on `main`. Changes to the bot, content, or workflow start it automatically. **Actions → Kocc Barma Telegram bot → Run workflow** starts it manually.
+Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the repository's Actions secrets. `OPENAI_API_KEY` is optional. The workflow runs on `main`. Changes to the bot, content, or workflow start it automatically. **Actions → Kocc Barma Telegram bot → Run workflow** starts it manually.
 
 The schedule requests a run every five minutes, starting at two minutes past the hour. GitHub can delay or drop scheduled events. Each scheduled job starts three consecutive 255-second polling sessions to cover more of the gap before the next event. Updates to `main` and manual starts run one session. All triggers share a concurrency group so only one runner polls Telegram at a time. [GitHub schedule events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
 

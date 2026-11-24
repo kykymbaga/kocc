@@ -1,4 +1,4 @@
-"""Kocc Barma-inspired Telegram group bot with optional native Story cards."""
+"""Kocc Barma-inspired Telegram group bot with original Belarusian fables."""
 import json
 import os
 import random
@@ -9,7 +9,6 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parent
 CORPUS = json.loads((ROOT / "corpus.json").read_text(encoding="utf-8"))
@@ -25,7 +24,6 @@ TZ = timezone(timedelta(hours=3), "Europe/Minsk")
 SEND_AT = os.getenv("MORNING_TIME", "09:00")
 POLL_AT = os.getenv("POLL_TIME", "18:00")
 STORY_AT = os.getenv("STORY_TIME", "20:30")
-STORY_CONNECTION = os.getenv("TELEGRAM_BUSINESS_CONNECTION_ID", "").strip()
 UNSIGNED_CHANCE = 0.20
 THRESHOLD = int(os.getenv("REPLY_EVERY", "40"))
 AUTO_REPLY_CHANCE = float(os.getenv("AUTO_REPLY_CHANCE", "0.22"))
@@ -67,20 +65,9 @@ POLL_QUESTIONS = [
 ]
 
 
-def api(method, payload=None, timeout=40, photo=None):
-    headers = {}
-    if photo is None:
-        body = urllib.parse.urlencode(payload or {}).encode()
-    else:
-        boundary = uuid4().hex
-        headers["Content-Type"] = "multipart/form-data; boundary=" + boundary
-        fields = [f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
-                  for k, v in payload.items()]
-        file_header = (f'--{boundary}\r\nContent-Disposition: form-data; name="card"; filename="story.jpg"\r\n'
-                       'Content-Type: image/jpeg\r\n\r\n')
-        fields.extend([file_header.encode(), photo, f'\r\n--{boundary}--\r\n'.encode()])
-        body = b"".join(fields)
-    req = urllib.request.Request(BASE_URL + method, data=body, headers=headers)
+def api(method, payload=None, timeout=40):
+    body = urllib.parse.urlencode(payload or {}).encode()
+    req = urllib.request.Request(BASE_URL + method, data=body)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             result = json.loads(response.read().decode("utf-8"))
@@ -267,7 +254,7 @@ def maybe_auto_reply(message, state):
     return True
 
 
-def send_opinion_poll(state):
+def send_opinion_poll(state, now=None):
     poll = random.choice(POLL_QUESTIONS)
     api("sendPoll", {
         "chat_id": CHAT_ID,
@@ -276,7 +263,7 @@ def send_opinion_poll(state):
         "is_anonymous": "true",
         "allows_multiple_answers": "false",
     })
-    state["last_poll_date"] = datetime.now(TZ).date().isoformat()
+    state["last_poll_date"] = (now or datetime.now(TZ)).date().isoformat()
     save_state(state)
 
 
@@ -368,39 +355,23 @@ def due_time(now, clock):
     return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
-def send_morning(state):
+def send_morning(state, now):
     story = choose_story(state)
     quote = choose_quote(state, story["topic"])
     body = f"{story_text(story)}\n\nСённяшняя прымаўка\n{quote_text(quote)}"
     send_text(body, state)
     remember_story(state, story)
-    state["last_morning_date"] = datetime.now(TZ).date().isoformat()
+    state["last_morning_date"] = now.date().isoformat()
     save_state(state)
 
 
 def send_evening(state, now):
-    today = now.date().isoformat()
-    if state.get("last_evening_date") != today:
-        story = choose_story(state)
-        send_text(story_text(story), state)
-        remember_story(state, story)
-        state.update(last_evening_date=today, evening_title=story["title"])
-        save_state(state)
-    if not STORY_CONNECTION or state.get("last_native_date") == today:
-        return
-    story = next((s for s in CONVERSATION_BANK["stories"] if s["title"] == state["evening_title"]), None)
-    if story is None:
-        return
-    from story_card import render_card
-    api("postStory", {
-        "business_connection_id": STORY_CONNECTION,
-        "content": json.dumps({"type": "photo", "photo": "attach://card"}),
-        "active_period": 86400,
-        "caption": story_text(story),
-    }, photo=render_card(story))
-    state["last_native_date"] = today
+    story = choose_story(state)
+    send_text(story_text(story), state)
+    remember_story(state, story)
+    state["last_evening_date"] = now.date().isoformat()
     save_state(state)
-    print("Published the native Telegram Story.", flush=True)
+    print("Posted the evening fable in the group.", flush=True)
 
 
 def scheduled_posts(state, now):
@@ -408,16 +379,15 @@ def scheduled_posts(state, now):
     jobs = [
         ("morning", now >= due_time(now, SEND_AT) and state.get("last_morning_date") != today, send_morning),
         ("poll", now.weekday() == 6 and now >= due_time(now, POLL_AT) and state.get("last_poll_date") != today, send_opinion_poll),
-        ("story", now >= due_time(now, STORY_AT) and (state.get("last_evening_date") != today
-                  or (STORY_CONNECTION and state.get("last_native_date") != today)), lambda s: send_evening(s, now)),
+        ("story", now >= due_time(now, STORY_AT) and state.get("last_evening_date") != today, send_evening),
     ]
     retry = state.setdefault("retry_after", {})
     for name, due, send in jobs:
         if due and now.timestamp() >= retry.get(name, 0):
             try:
-                send(state)
+                send(state, now)
                 retry.pop(name, None)
-            except (RuntimeError, ImportError, OSError) as exc:
+            except RuntimeError as exc:
                 print(f"Scheduled {name} delivery failed: {exc}", flush=True)
                 retry[name] = now.timestamp() + 900
                 save_state(state)
@@ -435,7 +405,7 @@ def start_offset(state):
 def main():
     state = load_state()
     state["anonymous_admin"] = anonymous_admin_enabled()
-    print(f"Group anonymous administrator enabled: {state['anonymous_admin']}. Native Stories configured: {bool(STORY_CONNECTION)}.", flush=True)
+    print(f"Group anonymous administrator enabled: {state['anonymous_admin']}.", flush=True)
     start_offset(state)
     max_seconds = int(os.getenv("BOT_MAX_SECONDS", "0"))
     deadline = time.monotonic() + max_seconds if max_seconds > 0 else None

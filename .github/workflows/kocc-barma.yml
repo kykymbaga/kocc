@@ -7,7 +7,7 @@ on:
     branches: [main]
     paths:
       - bot.py
-      - story_card.py
+      - test_bot.py
       - conversation-bank.json
       - corpus.json
       - .github/workflows/kocc-barma.yml
@@ -28,7 +28,6 @@ jobs:
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      TELEGRAM_BUSINESS_CONNECTION_ID: ${{ secrets.TELEGRAM_BUSINESS_CONNECTION_ID }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_MODEL: gpt-4o-mini
       BOT_MAX_SECONDS: "255"
@@ -55,10 +54,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install native Story renderer
-        if: env.TELEGRAM_BUSINESS_CONNECTION_ID != ''
-        run: python -m pip install Pillow==13.0.0
 
       - name: Test updated bot
         if: github.event_name == 'push'
