@@ -17,7 +17,7 @@ class BotTests(unittest.TestCase):
         self.enter_patch(patch.object(bot, "STATE_PATH", Path(temp.name) / "state.json"))
         self.enter_patch(patch.object(bot, "OPENAI_API_KEY", ""))
         self.api = self.enter_patch(patch.object(bot, "api"))
-        self.api.return_value = {"chat": {"id": -42}, "sender_chat": {"id": -42}, "message_id": 7}
+        self.api.return_value = {"chat": {"id": -42}, "from": {"is_bot": True}, "message_id": 7}
         self.state = bot.load_state()
 
     def enter_patch(self, item):
@@ -32,8 +32,8 @@ class BotTests(unittest.TestCase):
             self.assertNotEqual(first, bot.inspired_reply(recent, self.state))
         self.assertEqual(bot.message_topic("This family is waiting"), "default")
 
-    def test_anonymous_parent_reply_and_named_command(self):
-        self.state.update(anonymous_admin=True, recent_messages=[{"text": "/story"}])
+    def test_signed_and_unsigned_stories_and_followup_replies(self):
+        self.state.update(recent_messages=[{"text": "/story"}])
         for roll, signed in [(0.15, False), (0.9, True)]:
             msg = {"text": "/story@koccbarmafallbot", "message_id": 1,
                    "reply_to_message": {"text": "friendship"}, "is_topic_message": True, "message_thread_id": 33}
@@ -69,7 +69,7 @@ class BotTests(unittest.TestCase):
         for enabled in (True, False):
             self.api.reset_mock()
             self.api.side_effect = [{"id": 33}, {"is_anonymous": enabled}]
-            self.assertEqual(bot.anonymous_admin_enabled(), enabled)
+            bot.log_admin_status()
             self.assertEqual([c.args[0] for c in self.api.call_args_list], ["getMe", "getChatMember"])
 
     def test_late_run_sends_different_morning_and_evening_stories_once(self):

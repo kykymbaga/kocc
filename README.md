@@ -45,9 +45,9 @@ Use `/story friendship` or reply to a message with `/story` to pick a theme. The
 
 Mention Kocc or reply to one of his messages for a contextual answer. He uses up to five excerpts, including the message being replied to, and gives the newest speaker priority. With `OPENAI_API_KEY` set, direct questions use OpenAI and may incur charges. Local replies work without a key and cover all six themes. Occasional discussion replies are capped at four a day with a 30-minute cooldown. Every 40th human message may prompt a question.
 
-### Speaking under the group name
+### Sender name and signatures
 
-Kocc reads his existing **Remain Anonymous** administrator setting at startup. With it enabled, Telegram controls the group sender identity. Kocc identifies himself in roughly four out of five text posts and leaves the other posts unsigned. The workflow logs whether Telegram returned the group as sender, without printing chat messages or identifiers. A custom administrator title can also appear beside a message. [Telegram administrator rights](https://core.telegram.org/api/rights#anonymous-admins)
+Telegram identifies @koccbarmafallbot as the sender of his group messages, including when he has the **Remain Anonymous** administrator right. Telegram lets a bot pass that right to other administrators. Kocc leaves roughly one in five text posts unsigned and adds his handle to the others. Historical proverbs retain their source attribution in both cases. The workflow reports the configured right at startup and the sender type after delivery. [Telegram Bot API changelog, Anonymous Admins](https://core.telegram.org/bots/api-changelog#november-4-2020)
 
 ## GitHub Actions
 

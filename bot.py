@@ -121,18 +121,18 @@ def quote_text(quote):
     return f'{quote["belarusian"]}\n\nЗ гістарычнага зборніка Коц Бармы, № {quote["id"]}. Вольны пераклад.'
 
 
-def anonymous_admin_enabled():
+def log_admin_status():
     try:
         me = api("getMe")
         member = api("getChatMember", {"chat_id": CHAT_ID, "user_id": me["id"]})
-        return bool(member.get("is_anonymous"))
+        print(f"Telegram reports Remain Anonymous right: {bool(member.get('is_anonymous'))}.", flush=True)
     except RuntimeError as exc:
         print(f"Could not check anonymous administrator status: {exc}", flush=True)
-        return False
 
 
 def send_text(text, state, message=None):
-    if state.get("anonymous_admin") and random.random() >= UNSIGNED_CHANCE:
+    # Telegram always identifies bot senders. Only the text signature varies.
+    if random.random() >= UNSIGNED_CHANCE:
         text = f"{text}\n\n— {BOT_USERNAME}"
     payload = {"chat_id": CHAT_ID, "text": text}
     if message:
@@ -404,8 +404,7 @@ def start_offset(state):
 
 def main():
     state = load_state()
-    state["anonymous_admin"] = anonymous_admin_enabled()
-    print(f"Group anonymous administrator enabled: {state['anonymous_admin']}.", flush=True)
+    log_admin_status()
     start_offset(state)
     max_seconds = int(os.getenv("BOT_MAX_SECONDS", "0"))
     deadline = time.monotonic() + max_seconds if max_seconds > 0 else None
